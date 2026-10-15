@@ -30,7 +30,7 @@ const unpatches: (() => void)[] = [];
 let ChannelStoreRef: any;
 let patchedGetters: string[] = [];
 let listHooks: string[] = [];
-const BUILD = "b5";
+const BUILD = "b6";
 
 function refreshDmList(channelId?: string) {
     // Re-render every wrapped list right away (this is what actually removes the row)
@@ -248,8 +248,15 @@ function installListWrap(): string[] {
         if (debugSheets && T && (typeof T === "function" || typeof T === "object")) {
             const pr = args[1];
             const d = pr?.data ?? pr?.sections;
+            const rawName = String(T.displayName ?? T.name ?? T.type?.name ?? T.render?.name ?? "?");
+            if (/Fastest|Recycler|Sectioned/i.test(rawName) && pr && !/Command/i.test(rawName)) {
+                listSeen.set(
+                    `P:${rawName}`,
+                    `${rawName} sections=[${Array.isArray(pr.sections) ? pr.sections.join(",") : typeof pr.sections}] props{${Object.keys(pr).slice(0, 16).join("|")}}`
+                );
+            }
             const isCmd = (o: any) => !!(o?.execute || o?.data?.[0]?.execute || o?.applicationId);
-            if (Array.isArray(d) && d.length > 1 && !isCmd(d[0])) {
+            if (Array.isArray(d) && d.length > 1 && !isCmd(d[0]) && !/Command/i.test(rawName)) {
                 const nm = String(T.displayName ?? T.name ?? T.type?.name ?? T.render?.name ?? "?");
                 const it = d[0];
                 const keysOf = (o: any) =>
