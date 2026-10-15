@@ -6,11 +6,19 @@ import esbuild from "rollup-plugin-esbuild";
 
 const manifest = JSON.parse(readFileSync("./manifest.json", "utf8"));
 
-/** Wraps the bundle in `vendetta=>{...}` and writes dist/manifest.json with the bundle hash. */
+/**
+ * The Vendetta/Revenge loader evaluates `vendetta=>{return <plugin.js>}` itself,
+ * so the bundle must be a single *expression* that evaluates to the plugin's
+ * exports and uses the free variable `vendetta`. Rollup's IIFE output is
+ * `var plugin = (function(exports, ...){...})({}, vendetta.x, ...);`, so we strip
+ * the `var plugin =` prefix and trailing semicolon to leave just the expression.
+ */
 const vendettaPlugin = () => ({
     name: "vendetta",
     renderChunk(code) {
-        return `vendetta=>{${code}\nreturn plugin}`;
+        return code
+            .replace(/^\s*var\s+plugin\s*=\s*/, "")
+            .replace(/;\s*$/, "");
     },
     writeBundle() {
         const bundle = readFileSync("./dist/index.js");
@@ -31,7 +39,6 @@ export default {
         format: "iife",
         name: "plugin",
         exports: "named",
-        compact: true,
         globals(id) {
             if (id.startsWith("@vendetta")) return id.substring(1).replace(/\//g, ".");
             return { react: "window.React" }[id] ?? null;
@@ -41,7 +48,8 @@ export default {
     plugins: [
         nodeResolve(),
         commonjs(),
-        esbuild({ minify: true, target: "es2017" }),
+        // No minify: esbuild would re-wrap the IIFE and break the expression above.
+        esbuild({ minify: false, target: "es2017" }),
         vendettaPlugin(),
     ],
 };
