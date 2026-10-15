@@ -34,6 +34,8 @@ function refreshDmList(channelId?: string) {
     const emit = () => {
         for (const store of [PrivateChannelSortStore, ChannelStoreRef]) {
             safe(() => store?.emitChange?.(null));
+            // Also call the subscribed change listeners directly, in case emitChange is deferred
+            safe(() => store?._changeCallbacks?.invoke?.());
         }
     };
     emit();
@@ -82,6 +84,8 @@ function hideMessage(messageId: string, channelId: string): boolean {
 }
 
 function toggleDm(channelId: string) {
+    lastToggleAt = Date.now();
+    readSinceToggle.clear();
     if (hiddenDmIds.has(channelId)) {
         hiddenDmIds.delete(channelId);
         if (!hiddenDmIds.size) showHiddenDms = false;
@@ -100,7 +104,16 @@ const idOf = (c: any): string | undefined => (typeof c === "string" ? c : c?.id 
 const filterCache = new WeakMap<object, { sig: string; value: any }>();
 const lastToast: Record<string, number> = {};
 
+// Debug timing: how long after a hide/unhide each DM-list getter is first read again
+let lastToggleAt = 0;
+const readSinceToggle = new Set<string>();
+
 function filterList<T>(list: T, where = "?"): T {
+    if (debugSheets && lastToggleAt && !readSinceToggle.has(where) && Date.now() - lastToggleAt < 15000) {
+        readSinceToggle.add(where);
+        showToast(`${where.split(".")[1] ?? where} re-read +${Date.now() - lastToggleAt}ms`);
+    }
+
     if (showHiddenDms || !hiddenDmIds.size || !list || typeof list !== "object") return list;
 
     const sig = [...hiddenDmIds].join(",");
