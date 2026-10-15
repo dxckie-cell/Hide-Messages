@@ -108,23 +108,64 @@ function makeRow(key: string, label: string, iconNames: string[], onPress: () =>
 
 const eyeIcons = ["ic_visibility", "ic_visibility_24px", "ic_eye", "ic_show_password"];
 
-/** Finds the array of rows/buttons inside a rendered action sheet and inserts our row. */
+const typeName = (c: any) => String(c?.type?.name ?? c?.type?.displayName ?? "");
+const isRowish = (c: any) =>
+    !!c?.props && (typeof c.props.label === "string" || /Group|Row|Section/.test(typeName(c)));
+
+/** Collects every array reachable through props.children. */
+function collectArrays(node: any, out: any[][], seen: Set<any>, depth = 0) {
+    if (!node || typeof node !== "object" || depth > 16 || seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+        out.push(node);
+        for (const n of node) collectArrays(n, out, seen, depth + 1);
+        return;
+    }
+    if (node.props) collectArrays(node.props.children, out, seen, depth + 1);
+}
+
+/** Inserts our row after the last real row/group of the sheet (before any trailing spacer). */
+function insertIntoList(list: any[], row: any) {
+    let at = -1;
+    list.forEach((c, i) => {
+        if (isRowish(c)) at = i;
+    });
+    list.splice(at === -1 ? list.length : at + 1, 0, row);
+}
+
+/**
+ * Finds the list of rows/groups inside a rendered action sheet and inserts our row.
+ * Returns false if no suitable list exists.
+ */
 function injectRow(res: any, row: any): boolean {
-    const list = findInReactTree(
+    // 1. A list that directly contains rows (works for the message sheet)
+    const direct = findInReactTree(
         res,
-        (x: any) =>
-            Array.isArray(x) &&
-            x.length > 0 &&
-            x.some(
-                (c: any) =>
-                    c?.props &&
-                    (typeof c.props.label === "string" ||
-                        /Row/.test(String(c.type?.name ?? c.type?.displayName ?? "")))
-            )
+        (x: any) => Array.isArray(x) && x.length > 0 && x.some(isRowish)
     );
-    if (!list) return false;
-    list.push(row);
-    return true;
+    if (direct) {
+        insertIntoList(direct, row);
+        return true;
+    }
+
+    // 2. Fallback: the largest list of React elements anywhere in the sheet
+    const arrays: any[][] = [];
+    collectArrays(res, arrays, new Set());
+    let best: any[] | undefined;
+    let bestScore = 1;
+    for (const a of arrays) {
+        const score = a.filter(c => c?.props && c?.type).length;
+        if (score > bestScore) {
+            best = a;
+            bestScore = score;
+        }
+    }
+    if (best) {
+        insertIntoList(best, row);
+        return true;
+    }
+
+    return false;
 }
 
 function patchSheet(component: Promise<any>, makeRow: () => any, what: string) {
@@ -132,7 +173,12 @@ function patchSheet(component: Promise<any>, makeRow: () => any, what: string) {
         const unpatch = after("default", instance, (_: any, res: any) => {
             React.useEffect(() => () => void unpatch(), []);
             try {
-                if (!injectRow(res, makeRow())) showToast(`HideMessages: couldn't add ${what} button`);
+                const row = makeRow();
+                if (injectRow(res, row)) return res;
+
+                // Last resort: render our row right after the sheet's content
+                if (debugSheets) showToast(`HideMessages: using fallback placement for ${what}`);
+                return h(React.Fragment, null, res, row);
             } catch (e: any) {
                 showToast(`HideMessages: ${what} error: ${e?.message ?? e}`);
             }
