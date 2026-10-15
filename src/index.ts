@@ -40,9 +40,25 @@ function hideMessage(messageId: string, channelId: string): boolean {
     const store = safe(() => findByStoreName("MessageStore"));
     const stillThere = () => !!safe(() => store?.getMessage?.(channelId, messageId));
 
-    FluxDispatcher.dispatch({ type: "MESSAGE_DELETE", id: messageId, channelId, ...bypass });
+    // Plugins like NoDelete+ hook FluxDispatcher.dispatch and rewrite deletes. Calling the
+    // dispatcher's original (prototype) method skips every such hook.
+    const rawDispatch = (action: any) => {
+        const orig = safe(() => Object.getPrototypeOf(FluxDispatcher)?.dispatch);
+        if (typeof orig !== "function") return false;
+        orig.call(FluxDispatcher, action);
+        return true;
+    };
+    const send = (action: any) => {
+        if (!rawDispatch(action)) FluxDispatcher.dispatch(action);
+    };
+
+    send({ type: "MESSAGE_DELETE", id: messageId, channelId, ...bypass });
     if (stillThere()) {
-        FluxDispatcher.dispatch({ type: "MESSAGE_DELETE_BULK", ids: [messageId], channelId, ...bypass });
+        // Fall back to the normal (hookable) dispatch, then the bulk event
+        FluxDispatcher.dispatch({ type: "MESSAGE_DELETE", id: messageId, channelId, ...bypass });
+    }
+    if (stillThere()) {
+        send({ type: "MESSAGE_DELETE_BULK", ids: [messageId], channelId, ...bypass });
     }
     return !stillThere();
 }
