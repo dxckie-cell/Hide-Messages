@@ -33,13 +33,18 @@ function refreshDmList() {
     } catch { /* ignore */ }
 }
 
-function hideMessage(messageId: string, channelId: string) {
-    FluxDispatcher.dispatch({
-        type: "MESSAGE_DELETE",
-        id: messageId,
-        channelId,
-        mlDeleted: true,
-    });
+/** Removes a message from the local client only. Returns false if it's still in the store afterwards. */
+function hideMessage(messageId: string, channelId: string): boolean {
+    // Extra flags let the delete pass through message-logger style plugins that keep deleted messages
+    const bypass = { mlDeleted: true, otherPluginBypass: true };
+    const store = safe(() => findByStoreName("MessageStore"));
+    const stillThere = () => !!safe(() => store?.getMessage?.(channelId, messageId));
+
+    FluxDispatcher.dispatch({ type: "MESSAGE_DELETE", id: messageId, channelId, ...bypass });
+    if (stillThere()) {
+        FluxDispatcher.dispatch({ type: "MESSAGE_DELETE_BULK", ids: [messageId], channelId, ...bypass });
+    }
+    return !stillThere();
 }
 
 function toggleDm(channelId: string) {
@@ -157,8 +162,14 @@ const load = () => {
                         () =>
                             makeRow("vc-hide-message", "Hide", eyeIcons, () => {
                                 try {
-                                    hideMessage(message.id, message.channel_id);
-                                    showToast("Message hidden");
+                                    const channelId =
+                                        message.channel_id ?? message.channelId ?? ctx?.channel?.id ?? ctx?.channelId;
+                                    const ok = hideMessage(message.id, channelId);
+                                    showToast(
+                                        ok
+                                            ? "Message hidden"
+                                            : "Couldn't hide: message is still in Discord's store (a message logger plugin may be keeping it)"
+                                    );
                                 } catch (e: any) {
                                     showToast(`Hide failed: ${e?.message ?? e}`);
                                 }
