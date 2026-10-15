@@ -30,7 +30,7 @@ const unpatches: (() => void)[] = [];
 let ChannelStoreRef: any;
 let patchedGetters: string[] = [];
 let listHooks: string[] = [];
-const BUILD = "b4";
+const BUILD = "b5";
 
 function refreshDmList(channelId?: string) {
     // Re-render every wrapped list right away (this is what actually removes the row)
@@ -248,7 +248,8 @@ function installListWrap(): string[] {
         if (debugSheets && T && (typeof T === "function" || typeof T === "object")) {
             const pr = args[1];
             const d = pr?.data ?? pr?.sections;
-            if (Array.isArray(d) && d.length > 1) {
+            const isCmd = (o: any) => !!(o?.execute || o?.data?.[0]?.execute || o?.applicationId);
+            if (Array.isArray(d) && d.length > 1 && !isCmd(d[0])) {
                 const nm = String(T.displayName ?? T.name ?? T.type?.name ?? T.render?.name ?? "?");
                 const it = d[0];
                 const keysOf = (o: any) =>
@@ -650,7 +651,7 @@ const load = () => {
         cmd("hidelists", "HideMessages: show the lists Discord rendered since /hidedebug was turned on", () => {
             const rows = [...listSeen.values()];
             if (!rows.length) showToast("No lists seen (turn on /hidedebug, open the DM tab, retry)");
-            rows.slice(-8).forEach((r, i) => setTimeout(() => showToast(r), i * 3000));
+            rows.slice(-6).forEach((r, i) => setTimeout(() => showToast(r), i * 3000));
         }),
         cmd("hidedebug", "HideMessages: show the name of every action sheet you open", () => {
             debugSheets = !debugSheets;
