@@ -166,10 +166,18 @@ const load = () => {
     } else {
         unpatches.push(
             before("openLazy", LazyActionSheet, ([component, key, ctx]: any[]) => {
-                if (debugSheets) showToast(`Sheet: ${key}`);
+                if (debugSheets) {
+                    showToast(`Sheet: ${key} {${Object.keys(ctx ?? {}).join(", ")}}`);
+                }
 
                 const message = ctx?.message;
-                const channel = ctx?.channel ?? ctx?.channelId;
+                // The channel may be passed as an object, an id string, or only as an id field
+                const rawChannel = ctx?.channel ?? ctx?.channelId ?? ctx?.privateChannel ?? ctx?.dm;
+                const channelStore = safe(() => findByStoreName("ChannelStore"));
+                const channel: any =
+                    typeof rawChannel === "string"
+                        ? safe(() => channelStore?.getChannel?.(rawChannel))
+                        : rawChannel;
 
                 // Message long-press sheet
                 if (message && /Message/i.test(String(key))) {
@@ -197,9 +205,12 @@ const load = () => {
                 }
 
                 // DM / group DM long-press sheet (any channel sheet whose channel is a DM)
-                const dmChannel =
-                    typeof channel === "object" ? channel : undefined;
-                if (dmChannel && isDm(dmChannel) && /Channel|DM|Private/i.test(String(key))) {
+                const dmChannel = channel && typeof channel === "object" ? channel : undefined;
+                if (
+                    dmChannel &&
+                    isDm(dmChannel) &&
+                    /Channel|DM|Private|Conversation|LongPress/i.test(String(key))
+                ) {
                     patchSheet(
                         component,
                         () =>
