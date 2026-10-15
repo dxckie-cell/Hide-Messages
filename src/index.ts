@@ -27,10 +27,13 @@ let debugSheets = false;
 
 const unpatches: (() => void)[] = [];
 
+let ChannelStoreRef: any;
+let patchedGetters: string[] = [];
+
 function refreshDmList() {
-    try {
-        PrivateChannelSortStore?.emitChange?.();
-    } catch { /* ignore */ }
+    for (const store of [PrivateChannelSortStore, ChannelStoreRef]) {
+        safe(() => store?.emitChange?.(null));
+    }
 }
 
 /** Removes a message from the local client only. Returns false if it's still in the store afterwards. */
@@ -77,9 +80,60 @@ function toggleDm(channelId: string) {
 
 const idOf = (c: any): string | undefined => (typeof c === "string" ? c : c?.id ?? c?.channelId);
 
-function filterList<T>(list: T): T {
-    if (showHiddenDms || !hiddenDmIds.size || !Array.isArray(list)) return list;
-    return list.filter(c => !hiddenDmIds.has(idOf(c) as string)) as unknown as T;
+// Filtered results are cached per original result so the same object comes back while nothing
+// changed (components that compare results by reference would otherwise re-render forever).
+const filterCache = new WeakMap<object, { sig: string; value: any }>();
+const lastToast: Record<string, number> = {};
+
+function filterList<T>(list: T, where = "?"): T {
+    if (showHiddenDms || !hiddenDmIds.size || !list || typeof list !== "object") return list;
+
+    const sig = [...hiddenDmIds].join(",");
+    const cached = filterCache.get(list as any);
+    if (cached && cached.sig === sig) return cached.value;
+
+    let value: any = list;
+    let removed = 0;
+
+    if (Array.isArray(list)) {
+        const out = list.filter(c => !hiddenDmIds.has(idOf(c) as string));
+        removed = list.length - out.length;
+        if (removed) value = out;
+    } else if (Object.getPrototypeOf(list) === Object.prototype) {
+        // Map-like result keyed by channel id
+        const keys = Object.keys(list as any);
+        if (keys.some(k => hiddenDmIds.has(k))) {
+            value = {};
+            for (const k of keys) if (!hiddenDmIds.has(k)) value[k] = (list as any)[k];
+            removed = keys.length - Object.keys(value).length;
+        }
+    }
+
+    filterCache.set(list as any, { sig, value });
+
+    if (removed && debugSheets && Date.now() - (lastToast[where] ?? 0) > 3000) {
+        lastToast[where] = Date.now();
+        showToast(`Filtered ${removed} DM via ${where}`);
+    }
+    return value;
+}
+
+/** Names of store getters that might feed the DM list. */
+function dmListGetters(store: any): string[] {
+    const names = new Set<string>();
+    for (let o = store; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
+        for (const n of Object.getOwnPropertyNames(o)) {
+            if (
+                n.startsWith("get") &&
+                typeof store[n] === "function" &&
+                /PrivateChannel|SortedChannels|DMChannel|PrivateChannelIds/.test(n) &&
+                !/ById|ForUser|FromUser|Count|ForChannel/.test(n)
+            ) {
+                names.add(n);
+            }
+        }
+    }
+    return [...names];
 }
 
 const isDm = (channel: any) => channel && (channel.type === 1 || channel.type === 3);
@@ -336,15 +390,27 @@ const load = () => {
     }
 
     // Filter hidden DMs out of the DM list
-    if (PrivateChannelSortStore) {
-        for (const method of ["getSortedChannels", "getPrivateChannelIds"]) {
-            if (typeof PrivateChannelSortStore[method] === "function") {
-                unpatches.push(
-                    after(method, PrivateChannelSortStore, (_: any, res: any) => filterList(res))
-                );
-            }
+    ChannelStoreRef = safe(() => findByStoreName("ChannelStore"));
+    const patched: string[] = [];
+    for (const [storeName, store] of [
+        ["PrivateChannelSortStore", PrivateChannelSortStore],
+        ["ChannelStore", ChannelStoreRef],
+    ] as [string, any][]) {
+        if (!store) continue;
+        const methods = new Set([
+            ...dmListGetters(store),
+            ...(storeName === "PrivateChannelSortStore" ? ["getSortedChannels", "getPrivateChannelIds"] : []),
+        ]);
+        for (const method of methods) {
+            if (typeof store[method] !== "function") continue;
+            const where = `${storeName}.${method}`;
+            patched.push(where);
+            unpatches.push(
+                safe(() => after(method, store, (_: any, res: any) => filterList(res, where))) ?? (() => {})
+            );
         }
     }
+    patchedGetters = patched;
 
     // Slash commands (fallback that doesn't depend on Discord's sheet internals)
     const base = { applicationId: "-1", inputType: 1, type: 1, options: [] as any[] };
@@ -379,6 +445,9 @@ const load = () => {
         cmd("hidedebug", "HideMessages: show the name of every action sheet you open", () => {
             debugSheets = !debugSheets;
             showToast(debugSheets ? "Sheet debug ON" : "Sheet debug OFF");
+            if (debugSheets) {
+                showToast(`DM list getters patched: ${patchedGetters.join(", ") || "none found"}`);
+            }
         })
     );
 };
