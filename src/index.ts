@@ -29,6 +29,8 @@ const unpatches: (() => void)[] = [];
 
 let ChannelStoreRef: any;
 let patchedGetters: string[] = [];
+let listHooks: string[] = [];
+const BUILD = "b3";
 
 function refreshDmList(channelId?: string) {
     // Re-render every wrapped list right away (this is what actually removes the row)
@@ -604,7 +606,8 @@ const load = () => {
             );
         }
     }
-    patchedGetters = patched.concat(safe(() => installListWrap()) ?? ["list-wrap-failed"]);
+    patchedGetters = patched;
+    listHooks = safe(() => installListWrap()) ?? ["failed"];
 
     // Slash commands (fallback that doesn't depend on Discord's sheet internals)
     const base = { applicationId: "-1", inputType: 1, type: 1, options: [] as any[] };
@@ -645,7 +648,11 @@ const load = () => {
             setProbes(debugSheets);
             showToast(debugSheets ? "Sheet debug ON" : "Sheet debug OFF");
             if (debugSheets) {
-                showToast(`DM list getters patched: ${patchedGetters.join(", ") || "none found"}`);
+                showToast(`Build ${BUILD}. List hooks: ${listHooks.join(", ") || "none"}`);
+                setTimeout(
+                    () => showToast(`DM list getters patched: ${patchedGetters.join(", ") || "none found"}`),
+                    3000
+                );
             }
         })
     );
