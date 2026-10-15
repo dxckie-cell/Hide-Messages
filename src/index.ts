@@ -86,6 +86,15 @@ function hideMessage(messageId: string, channelId: string): boolean {
 function toggleDm(channelId: string) {
     lastToggleAt = Date.now();
     readSinceToggle.clear();
+    readLog.length = 0;
+    // Bump any "version" numbers the DM list uses to decide when to rebuild itself
+    versionBump++;
+    if (debugSheets) {
+        setTimeout(
+            () => showToast(`Re-read after toggle: ${readLog.join("; ") || "nothing"}`),
+            1800
+        );
+    }
     if (hiddenDmIds.has(channelId)) {
         hiddenDmIds.delete(channelId);
         if (!hiddenDmIds.size) showHiddenDms = false;
@@ -101,47 +110,58 @@ const idOf = (c: any): string | undefined => (typeof c === "string" ? c : c?.id 
 
 // Filtered results are cached per original result so the same object comes back while nothing
 // changed (components that compare results by reference would otherwise re-render forever).
-const filterCache = new WeakMap<object, { sig: string; value: any }>();
-const lastToast: Record<string, number> = {};
+const filterCache = new WeakMap<object, { sig: string; value: any; removed: number }>();
 
 // Debug timing: how long after a hide/unhide each DM-list getter is first read again
 let lastToggleAt = 0;
+let versionBump = 0;
 const readSinceToggle = new Set<string>();
+const readLog: string[] = [];
 
 function filterList<T>(list: T, where = "?"): T {
-    if (debugSheets && lastToggleAt && !readSinceToggle.has(where) && Date.now() - lastToggleAt < 15000) {
-        readSinceToggle.add(where);
-        showToast(`${where.split(".")[1] ?? where} re-read +${Date.now() - lastToggleAt}ms`);
-    }
-
-    if (showHiddenDms || !hiddenDmIds.size || !list || typeof list !== "object") return list;
-
-    const sig = [...hiddenDmIds].join(",");
-    const cached = filterCache.get(list as any);
-    if (cached && cached.sig === sig) return cached.value;
-
     let value: any = list;
     let removed = 0;
 
-    if (Array.isArray(list)) {
-        const out = list.filter(c => !hiddenDmIds.has(idOf(c) as string));
-        removed = list.length - out.length;
-        if (removed) value = out;
-    } else if (Object.getPrototypeOf(list) === Object.prototype) {
-        // Map-like result keyed by channel id
-        const keys = Object.keys(list as any);
-        if (keys.some(k => hiddenDmIds.has(k))) {
-            value = {};
-            for (const k of keys) if (!hiddenDmIds.has(k)) value[k] = (list as any)[k];
-            removed = keys.length - Object.keys(value).length;
+    if (typeof list === "number") {
+        // A version counter: changing it makes the list rebuild itself from the (filtered) data
+        if (versionBump && /Version/i.test(where)) value = list + versionBump;
+    } else if (list && typeof list === "object" && !showHiddenDms && hiddenDmIds.size) {
+        const sig = [...hiddenDmIds].join(",");
+        const cached = filterCache.get(list as any);
+        if (cached && cached.sig === sig) {
+            value = cached.value;
+            removed = cached.removed;
+        } else {
+            if (Array.isArray(list)) {
+                const out = list.filter(c => !hiddenDmIds.has(idOf(c) as string));
+                removed = list.length - out.length;
+                if (removed) value = out;
+            } else if (list instanceof Set) {
+                const out = new Set([...list].filter(c => !hiddenDmIds.has(idOf(c) as string)));
+                removed = list.size - out.size;
+                if (removed) value = out;
+            } else if (list instanceof Map) {
+                const out = new Map([...list].filter(([k]) => !hiddenDmIds.has(String(k))));
+                removed = list.size - out.size;
+                if (removed) value = out;
+            } else if (Object.getPrototypeOf(list) === Object.prototype) {
+                // Map-like result keyed by channel id
+                const keys = Object.keys(list as any);
+                if (keys.some(k => hiddenDmIds.has(k))) {
+                    const out: any = {};
+                    for (const k of keys) if (!hiddenDmIds.has(k)) out[k] = (list as any)[k];
+                    removed = keys.length - Object.keys(out).length;
+                    value = out;
+                }
+            }
+            filterCache.set(list as any, { sig, value, removed });
         }
     }
 
-    filterCache.set(list as any, { sig, value });
-
-    if (removed && debugSheets && Date.now() - (lastToast[where] ?? 0) > 3000) {
-        lastToast[where] = Date.now();
-        showToast(`Filtered ${removed} DM via ${where}`);
+    if (debugSheets && lastToggleAt && !readSinceToggle.has(where) && Date.now() - lastToggleAt < 15000) {
+        readSinceToggle.add(where);
+        const kind = typeof list === "number" ? "num" : Array.isArray(list) ? "arr" : (list as any)?.constructor?.name ?? typeof list;
+        readLog.push(`${where.split(".")[1] ?? where}[${kind}] +${Date.now() - lastToggleAt}ms${removed ? ` -${removed}` : ""}`);
     }
     return value;
 }
