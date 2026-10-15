@@ -90,10 +90,14 @@ function toggleDm(channelId: string) {
     // Bump any "version" numbers the DM list uses to decide when to rebuild itself
     versionBump++;
     if (debugSheets) {
-        setTimeout(
-            () => showToast(`Re-read after toggle: ${readLog.join("; ") || "nothing"}`),
-            1800
-        );
+        probeSeen.clear();
+        setTimeout(() => {
+            showToast(`Re-read after toggle: ${readLog.join("; ") || "nothing"}`);
+            setTimeout(
+                () => showToast(`All getters read: ${[...probeSeen].join(", ") || "none"}`),
+                2500
+            );
+        }, 1800);
     }
     if (hiddenDmIds.has(channelId)) {
         hiddenDmIds.delete(channelId);
@@ -158,12 +162,68 @@ function filterList<T>(list: T, where = "?"): T {
         }
     }
 
+    // A "version" list that keeps the same identity tells the DM list nothing changed, so hand
+    // back a fresh copy after every hide/unhide (cached so repeated reads stay stable).
+    if (versionBump && /Version/i.test(where) && Array.isArray(value)) {
+        const cached = versionCopies.get(list as any);
+        if (cached && cached.bump === versionBump && cached.base === value) {
+            value = cached.copy;
+        } else {
+            const copy = [...value];
+            versionCopies.set(list as any, { bump: versionBump, base: value, copy });
+            value = copy;
+        }
+    }
+
     if (debugSheets && lastToggleAt && !readSinceToggle.has(where) && Date.now() - lastToggleAt < 15000) {
         readSinceToggle.add(where);
-        const kind = typeof list === "number" ? "num" : Array.isArray(list) ? "arr" : (list as any)?.constructor?.name ?? typeof list;
-        readLog.push(`${where.split(".")[1] ?? where}[${kind}] +${Date.now() - lastToggleAt}ms${removed ? ` -${removed}` : ""}`);
+        const kind =
+            typeof list === "number"
+                ? "num"
+                : Array.isArray(list)
+                ? `arr${list.length}:${typeof list[0]}`
+                : (list as any)?.constructor?.name ?? typeof list;
+        readLog.push(
+            `${where.split(".")[1] ?? where}[${kind}] +${Date.now() - lastToggleAt}ms${removed ? ` -${removed}` : ""}`
+        );
     }
     return value;
+}
+
+const versionCopies = new WeakMap<object, { bump: number; base: any; copy: any[] }>();
+
+// Debug probes: record every getter on the DM stores that gets read shortly after a toggle
+let probeUnpatches: (() => void)[] = [];
+const probeSeen = new Set<string>();
+
+function setProbes(on: boolean) {
+    for (const u of probeUnpatches) safe(u);
+    probeUnpatches = [];
+    probeSeen.clear();
+    if (!on) return;
+
+    for (const [label, store] of [
+        ["PCS", PrivateChannelSortStore],
+        ["CS", ChannelStoreRef],
+    ] as [string, any][]) {
+        if (!store) continue;
+        const names = new Set<string>();
+        for (let o = store; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
+            for (const n of Object.getOwnPropertyNames(o)) {
+                if (n.startsWith("get") && n !== "getChannel" && safe(() => typeof store[n] === "function")) {
+                    names.add(n);
+                }
+            }
+        }
+        for (const n of names) {
+            const u = safe(() =>
+                before(n, store, () => {
+                    if (lastToggleAt && Date.now() - lastToggleAt < 1800) probeSeen.add(`${label}.${n}`);
+                })
+            );
+            if (u) probeUnpatches.push(u);
+        }
+    }
 }
 
 /** Names of store getters that might feed the DM list. */
@@ -492,6 +552,7 @@ const load = () => {
         }),
         cmd("hidedebug", "HideMessages: show the name of every action sheet you open", () => {
             debugSheets = !debugSheets;
+            setProbes(debugSheets);
             showToast(debugSheets ? "Sheet debug ON" : "Sheet debug OFF");
             if (debugSheets) {
                 showToast(`DM list getters patched: ${patchedGetters.join(", ") || "none found"}`);
@@ -506,5 +567,6 @@ export const onUnload = () => {
     hiddenDmIds.clear();
     showHiddenDms = false;
     debugSheets = false;
+    setProbes(false);
     refreshDmList();
 };
