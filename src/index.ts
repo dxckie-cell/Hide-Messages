@@ -198,6 +198,7 @@ function filterList<T>(list: T, where = "?"): T {
 // list component (FlashList / FlatList) that shows DMs. The wrapper filters hidden channels out
 // of `data` and re-renders itself the moment a DM is hidden/unhidden.
 const listListeners = new Set<() => void>();
+const listSeen = new Map<string, string>();
 const wrappedLists = new WeakMap<object, any>();
 
 const looksLikeDmList = (data: any) => {
@@ -242,6 +243,16 @@ function installListWrap(): string[] {
     const wrappers = new Set<any>();
     const hook = (args: any[]) => {
         const T = args[0];
+        if (debugSheets && T && (typeof T === "function" || typeof T === "object")) {
+            const d = args[1]?.data;
+            if (Array.isArray(d) && d.length > 3) {
+                const nm = String(T.displayName ?? T.name ?? T.type?.name ?? T.render?.name ?? "?");
+                const it = d[0];
+                const shape =
+                    typeof it === "string" ? "str" : Object.keys(it ?? {}).slice(0, 5).join("|") || typeof it;
+                listSeen.set(nm, `${nm} n=${d.length} [${shape}] known=${types.has(T)} dm=${looksLikeDmList(d)}`);
+            }
+        }
         if (T && types.has(T) && looksLikeDmList(args[1]?.data)) args[0] = wrapList(T);
         return args;
     };
@@ -624,6 +635,10 @@ const load = () => {
             showHiddenDms = !showHiddenDms;
             showToast(showHiddenDms ? "Showing hidden DMs" : "Hiding hidden DMs");
             refreshDmList();
+        }),
+        cmd("hidelists", "HideMessages: show the lists Discord rendered since /hidedebug was turned on", () => {
+            const rows = [...listSeen.values()];
+            showToast(rows.length ? rows.slice(0, 6).join(" ; ") : "No lists seen (turn on /hidedebug, open the DM tab, retry)");
         }),
         cmd("hidedebug", "HideMessages: show the name of every action sheet you open", () => {
             debugSheets = !debugSheets;
