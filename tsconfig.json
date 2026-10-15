@@ -6,8 +6,7 @@
         "jsx": "react",
         "strict": false,
         "skipLibCheck": true,
-        "noEmit": true,
-        "types": ["vendetta-types"]
+        "noEmit": true
     },
     "include": ["src"]
 }
