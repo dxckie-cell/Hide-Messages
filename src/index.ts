@@ -30,10 +30,24 @@ const unpatches: (() => void)[] = [];
 let ChannelStoreRef: any;
 let patchedGetters: string[] = [];
 
-function refreshDmList() {
-    for (const store of [PrivateChannelSortStore, ChannelStoreRef]) {
-        safe(() => store?.emitChange?.(null));
-    }
+function refreshDmList(channelId?: string) {
+    const emit = () => {
+        for (const store of [PrivateChannelSortStore, ChannelStoreRef]) {
+            safe(() => store?.emitChange?.(null));
+        }
+    };
+    emit();
+
+    // emitChange alone doesn't always make the DM list re-render. Re-announcing the channel
+    // makes the stores treat it as a real change, so the list recomputes.
+    const channel = channelId ? safe(() => ChannelStoreRef?.getChannel?.(channelId)) : undefined;
+    const poke = () => {
+        if (channel) safe(() => FluxDispatcher.dispatch({ type: "CHANNEL_UPDATE", channel }));
+        emit();
+    };
+    poke();
+    // Once more after the action sheet has closed
+    setTimeout(poke, 250);
 }
 
 /** Removes a message from the local client only. Returns false if it's still in the store afterwards. */
@@ -75,7 +89,7 @@ function toggleDm(channelId: string) {
         hiddenDmIds.add(channelId);
         showToast("DM hidden until restart");
     }
-    refreshDmList();
+    refreshDmList(channelId);
 }
 
 const idOf = (c: any): string | undefined => (typeof c === "string" ? c : c?.id ?? c?.channelId);
