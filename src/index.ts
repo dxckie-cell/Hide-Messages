@@ -30,7 +30,7 @@ const unpatches: (() => void)[] = [];
 let ChannelStoreRef: any;
 let patchedGetters: string[] = [];
 let listHooks: string[] = [];
-const BUILD = "b3";
+const BUILD = "b4";
 
 function refreshDmList(channelId?: string) {
     // Re-render every wrapped list right away (this is what actually removes the row)
@@ -246,13 +246,21 @@ function installListWrap(): string[] {
     const hook = (args: any[]) => {
         const T = args[0];
         if (debugSheets && T && (typeof T === "function" || typeof T === "object")) {
-            const d = args[1]?.data;
-            if (Array.isArray(d) && d.length > 3) {
+            const pr = args[1];
+            const d = pr?.data ?? pr?.sections;
+            if (Array.isArray(d) && d.length > 1) {
                 const nm = String(T.displayName ?? T.name ?? T.type?.name ?? T.render?.name ?? "?");
                 const it = d[0];
-                const shape =
-                    typeof it === "string" ? "str" : Object.keys(it ?? {}).slice(0, 5).join("|") || typeof it;
-                listSeen.set(nm, `${nm} n=${d.length} [${shape}] known=${types.has(T)} dm=${looksLikeDmList(d)}`);
+                const keysOf = (o: any) =>
+                    typeof o === "string" ? "str" : Object.keys(o ?? {}).slice(0, 9).join("|") || typeof o;
+                let shape = keysOf(it);
+                const inner = it?.data;
+                if (Array.isArray(inner)) shape += ` data[${inner.length}]{${keysOf(inner[0])}}`;
+                const prop = pr?.sections ? "sections" : "data";
+                listSeen.set(
+                    `${nm}:${prop}:${shape}`,
+                    `${nm}.${prop} n=${d.length} {${shape}} dm=${looksLikeDmList(d) || looksLikeDmList(inner)}`
+                );
             }
         }
         if (T && types.has(T) && looksLikeDmList(args[1]?.data)) args[0] = wrapList(T);
@@ -641,7 +649,8 @@ const load = () => {
         }),
         cmd("hidelists", "HideMessages: show the lists Discord rendered since /hidedebug was turned on", () => {
             const rows = [...listSeen.values()];
-            showToast(rows.length ? rows.slice(0, 6).join(" ; ") : "No lists seen (turn on /hidedebug, open the DM tab, retry)");
+            if (!rows.length) showToast("No lists seen (turn on /hidedebug, open the DM tab, retry)");
+            rows.slice(-8).forEach((r, i) => setTimeout(() => showToast(r), i * 3000));
         }),
         cmd("hidedebug", "HideMessages: show the name of every action sheet you open", () => {
             debugSheets = !debugSheets;
