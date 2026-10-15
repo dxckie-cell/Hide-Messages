@@ -123,7 +123,7 @@ function injectRow(res: any, row: any): boolean {
             )
     );
     if (!list) return false;
-    list.splice(Math.min(1, list.length), 0, row);
+    list.push(row);
     return true;
 }
 
