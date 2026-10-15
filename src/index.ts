@@ -6,13 +6,16 @@ import { showToast } from "@vendetta/ui/toasts";
 import { findInReactTree } from "@vendetta/utils";
 
 const LazyActionSheet = findByProps("openLazy", "hideActionSheet");
-const ActionSheetRow =
-    findByProps("ActionSheetRow")?.ActionSheetRow ?? findByName("ActionSheetRow");
+const RowComponent: any =
+    findByProps("ActionSheetRow")?.ActionSheetRow ??
+    findByName("ActionSheetRow", false) ??
+    findByProps("TableRow")?.TableRow;
 const PrivateChannelSortStore = findByStoreName("PrivateChannelSortStore");
 
 // In-memory only: everything resets when Discord restarts (or the plugin is unloaded)
 const hiddenDmIds = new Set<string>();
 let showHiddenDms = false;
+let debugSheets = false;
 
 const unpatches: (() => void)[] = [];
 
@@ -50,43 +53,95 @@ function filterList<T>(list: T): T {
     return list.filter(c => !hiddenDmIds.has(idOf(c) as string)) as unknown as T;
 }
 
+const isDm = (channel: any) => channel && (channel.type === 1 || channel.type === 3);
+
+/** Finds the array of rows/buttons inside a rendered action sheet and inserts our row. */
+function injectRow(res: any, row: any): boolean {
+    const list = findInReactTree(
+        res,
+        (x: any) =>
+            Array.isArray(x) &&
+            x.length > 0 &&
+            x.some(
+                (c: any) =>
+                    c?.props &&
+                    (typeof c.props.label === "string" ||
+                        /Row/.test(String(c.type?.name ?? c.type?.displayName ?? "")))
+            )
+    );
+    if (!list) return false;
+    list.splice(Math.min(1, list.length), 0, row);
+    return true;
+}
+
+function patchSheet(component: Promise<any>, makeRow: () => any, what: string) {
+    component.then((instance: any) => {
+        const unpatch = after("default", instance, (_: any, res: any) => {
+            React.useEffect(() => () => void unpatch(), []);
+            try {
+                if (!injectRow(res, makeRow())) showToast(`HideMessages: couldn't add ${what} button`);
+            } catch (e: any) {
+                showToast(`HideMessages: ${what} error: ${e?.message ?? e}`);
+            }
+            return res;
+        });
+    });
+}
+
 export const onLoad = () => {
-    // 1. "Hide" button in the message long-press sheet
-    if (LazyActionSheet && ActionSheetRow) {
+    if (!LazyActionSheet) {
+        showToast("HideMessages: action sheet module not found");
+    } else if (!RowComponent) {
+        showToast("HideMessages: row component not found");
+    } else {
         unpatches.push(
             before("openLazy", LazyActionSheet, ([component, key, ctx]: any[]) => {
-                if (key !== "MessageLongPressActionSheet") return;
+                if (debugSheets) showToast(`Sheet: ${key}`);
+
                 const message = ctx?.message;
-                if (!message) return;
+                const channel = ctx?.channel ?? ctx?.channelId;
 
-                component.then((instance: any) => {
-                    const unpatch = after("default", instance, (_: any, res: any) => {
-                        React.useEffect(() => () => void unpatch(), []);
-
-                        const buttons = findInReactTree(
-                            res,
-                            (x: any) => x?.[0]?.type?.name === "ButtonRow"
-                        );
-                        if (!buttons) return;
-
-                        buttons.splice(
-                            1,
-                            0,
-                            React.createElement(ActionSheetRow, {
+                // Message long-press sheet
+                if (message && /Message/i.test(String(key))) {
+                    patchSheet(
+                        component,
+                        () =>
+                            React.createElement(RowComponent, {
+                                key: "vc-hide-message",
                                 label: "Hide",
                                 onPress: () => {
                                     hideMessage(message.id, message.channel_id);
                                     LazyActionSheet.hideActionSheet();
                                 },
-                            })
-                        );
-                    });
-                });
+                            }),
+                        "Hide"
+                    );
+                    return;
+                }
+
+                // DM / group DM long-press sheet (any channel sheet whose channel is a DM)
+                const dmChannel =
+                    typeof channel === "object" ? channel : undefined;
+                if (dmChannel && isDm(dmChannel) && /Channel|DM|Private/i.test(String(key))) {
+                    patchSheet(
+                        component,
+                        () =>
+                            React.createElement(RowComponent, {
+                                key: "vc-hide-dm",
+                                label: hiddenDmIds.has(dmChannel.id) ? "Unhide DM" : "Hide DM",
+                                onPress: () => {
+                                    toggleDm(dmChannel.id);
+                                    LazyActionSheet.hideActionSheet();
+                                },
+                            }),
+                        "Hide DM"
+                    );
+                }
             })
         );
     }
 
-    // 2. Filter hidden DMs out of the DM list
+    // Filter hidden DMs out of the DM list
     if (PrivateChannelSortStore) {
         for (const method of ["getSortedChannels", "getPrivateChannelIds"]) {
             if (typeof PrivateChannelSortStore[method] === "function") {
@@ -97,42 +152,39 @@ export const onLoad = () => {
         }
     }
 
-    // 3. Slash commands (mobile has no DM context-menu entry to patch reliably)
+    // Slash commands (fallback that doesn't depend on Discord's sheet internals)
     const base = { applicationId: "-1", inputType: 1, type: 1, options: [] as any[] };
+    const cmd = (name: string, description: string, execute: (args: any, ctx: any) => void) =>
+        registerCommand({
+            ...base,
+            name,
+            displayName: name,
+            description,
+            displayDescription: description,
+            execute,
+        });
 
     unpatches.push(
-        registerCommand({
-            ...base,
-            name: "hidedm",
-            displayName: "hidedm",
-            description: "Hide/unhide this DM until you restart",
-            displayDescription: "Hide/unhide this DM until you restart",
-            execute: (_args: any, ctx: any) => {
-                const channel = ctx?.channel;
-                if (!channel) return;
-                // 1 = DM, 3 = group DM
-                if (channel.type !== 1 && channel.type !== 3) {
-                    showToast("This isn't a DM");
-                    return;
-                }
-                toggleDm(channel.id);
-            },
+        cmd("hidedm", "Hide/unhide this DM until you restart", (_a, ctx) => {
+            const channel = ctx?.channel;
+            if (!channel || !isDm(channel)) {
+                showToast("This isn't a DM");
+                return;
+            }
+            toggleDm(channel.id);
         }),
-        registerCommand({
-            ...base,
-            name: "showhiddendms",
-            displayName: "showhiddendms",
-            description: "Toggle showing hidden DMs in the DM list",
-            displayDescription: "Toggle showing hidden DMs in the DM list",
-            execute: () => {
-                if (!hiddenDmIds.size) {
-                    showToast("No hidden DMs");
-                    return;
-                }
-                showHiddenDms = !showHiddenDms;
-                showToast(showHiddenDms ? "Showing hidden DMs" : "Hiding hidden DMs");
-                refreshDmList();
-            },
+        cmd("showhiddendms", "Toggle showing hidden DMs in the DM list", () => {
+            if (!hiddenDmIds.size) {
+                showToast("No hidden DMs");
+                return;
+            }
+            showHiddenDms = !showHiddenDms;
+            showToast(showHiddenDms ? "Showing hidden DMs" : "Hiding hidden DMs");
+            refreshDmList();
+        }),
+        cmd("hidedebug", "HideMessages: show the name of every action sheet you open", () => {
+            debugSheets = !debugSheets;
+            showToast(debugSheets ? "Sheet debug ON" : "Sheet debug OFF");
         })
     );
 };
@@ -142,5 +194,6 @@ export const onUnload = () => {
     unpatches.length = 0;
     hiddenDmIds.clear();
     showHiddenDms = false;
+    debugSheets = false;
     refreshDmList();
 };
