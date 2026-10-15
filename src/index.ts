@@ -5,12 +5,18 @@ import { after, before } from "@vendetta/patcher";
 import { showToast } from "@vendetta/ui/toasts";
 import { findInReactTree } from "@vendetta/utils";
 
-const LazyActionSheet = findByProps("openLazy", "hideActionSheet");
-const RowComponent: any =
-    findByProps("ActionSheetRow")?.ActionSheetRow ??
-    findByName("ActionSheetRow", false) ??
-    findByProps("TableRow")?.TableRow;
-const PrivateChannelSortStore = findByStoreName("PrivateChannelSortStore");
+// Resolved inside load() so a failed lookup can never crash plugin startup
+let LazyActionSheet: any;
+let RowComponent: any;
+let PrivateChannelSortStore: any;
+
+const safe = <T,>(fn: () => T): T | undefined => {
+    try {
+        return fn();
+    } catch {
+        return undefined;
+    }
+};
 
 // In-memory only: everything resets when Discord restarts (or the plugin is unloaded)
 const hiddenDmIds = new Set<string>();
@@ -89,6 +95,22 @@ function patchSheet(component: Promise<any>, makeRow: () => any, what: string) {
 }
 
 export const onLoad = () => {
+    try {
+        load();
+        showToast("HideMessages loaded");
+    } catch (e: any) {
+        showToast(`HideMessages failed: ${e?.message ?? e}`);
+    }
+};
+
+const load = () => {
+    LazyActionSheet = safe(() => findByProps("openLazy", "hideActionSheet"));
+    RowComponent =
+        safe(() => findByProps("ActionSheetRow")?.ActionSheetRow) ??
+        safe(() => findByName("ActionSheetRow", false)) ??
+        safe(() => findByProps("TableRow")?.TableRow);
+    PrivateChannelSortStore = safe(() => findByStoreName("PrivateChannelSortStore"));
+
     if (!LazyActionSheet) {
         showToast("HideMessages: action sheet module not found");
     } else if (!RowComponent) {

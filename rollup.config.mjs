@@ -41,7 +41,7 @@ export default {
     plugins: [
         nodeResolve(),
         commonjs(),
-        esbuild({ minify: true, target: "esnext" }),
+        esbuild({ minify: true, target: "es2017" }),
         vendettaPlugin(),
     ],
 };
