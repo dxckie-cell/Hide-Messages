@@ -137,7 +137,7 @@ function insertIntoList(list: any[], row: any) {
  * Finds the list of rows/groups inside a rendered action sheet and inserts our row.
  * Returns false if no suitable list exists.
  */
-function injectRow(res: any, row: any): boolean {
+function injectRow(res: any, row: any, strict = false): boolean {
     // 1. A list that directly contains rows (works for the message sheet)
     const direct = findInReactTree(
         res,
@@ -147,6 +147,7 @@ function injectRow(res: any, row: any): boolean {
         insertIntoList(direct, row);
         return true;
     }
+    if (strict) return false;
 
     // 2. Fallback: the largest list of React elements anywhere in the sheet
     const arrays: any[][] = [];
@@ -168,17 +169,75 @@ function injectRow(res: any, row: any): boolean {
     return false;
 }
 
+// Some sheets (e.g. the DM one) render their rows inside a nested component, so the rows
+// aren't visible in the sheet's own element tree. For those we wrap the nested function
+// components and inject into the first one whose output contains a list of rows.
+interface ActivePatch {
+    row: any;
+    what: string;
+    owner?: any;
+}
+let activePatch: ActivePatch | null = null;
+const wrapperCache = new WeakMap<object, any>();
+const SKIP_WRAP = /Table|Row|Group|Icon|Text|Pressable|Touchable|View|Image|Avatar|Button|Header/;
+
+function wrapComponents(node: any, depth = 0, seen = new Set<any>()) {
+    if (!node || typeof node !== "object" || depth > 12 || seen.has(node)) return;
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+        for (const n of node) wrapComponents(n, depth + 1, seen);
+        return;
+    }
+    if (!node.props) return;
+
+    const T = node.type;
+    if (
+        typeof T === "function" &&
+        !T.prototype?.isReactComponent &&
+        !SKIP_WRAP.test(String(T.displayName ?? T.name ?? ""))
+    ) {
+        let W = wrapperCache.get(T);
+        if (!W) {
+            W = function HideMessagesWrapped(props: any) {
+                const out = T(props);
+                const st = activePatch;
+                if (st && (st.owner === undefined || st.owner === W) && injectRow(out, st.row, true)) {
+                    if (st.owner === undefined && debugSheets) {
+                        showToast(`HideMessages: injected into ${T.displayName ?? T.name ?? "component"}`);
+                    }
+                    st.owner = W;
+                }
+                return out;
+            };
+            W.displayName = T.displayName ?? T.name;
+            wrapperCache.set(T, W);
+        }
+        try {
+            node.type = W;
+        } catch { /* frozen element: can't wrap this one */ }
+    }
+
+    wrapComponents(node.props.children, depth + 1, seen);
+}
+
 function patchSheet(component: Promise<any>, makeRow: () => any, what: string) {
     component.then((instance: any) => {
         const unpatch = after("default", instance, (_: any, res: any) => {
-            React.useEffect(() => () => void unpatch(), []);
+            React.useEffect(
+                () => () => {
+                    unpatch();
+                    activePatch = null;
+                },
+                []
+            );
             try {
                 const row = makeRow();
                 if (injectRow(res, row)) return res;
 
-                // Last resort: render our row right after the sheet's content
-                if (debugSheets) showToast(`HideMessages: using fallback placement for ${what}`);
-                return h(React.Fragment, null, res, row);
+                // Rows live inside a nested component: hook into it instead
+                activePatch = { row, what };
+                wrapComponents(res);
             } catch (e: any) {
                 showToast(`HideMessages: ${what} error: ${e?.message ?? e}`);
             }
