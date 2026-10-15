@@ -2,12 +2,14 @@ import { registerCommand } from "@vendetta/commands";
 import { findByName, findByProps, findByStoreName } from "@vendetta/metro";
 import { FluxDispatcher, React } from "@vendetta/metro/common";
 import { after, before } from "@vendetta/patcher";
+import { getAssetIDByName } from "@vendetta/ui/assets";
 import { showToast } from "@vendetta/ui/toasts";
 import { findInReactTree } from "@vendetta/utils";
 
 // Resolved inside load() so a failed lookup can never crash plugin startup
 let LazyActionSheet: any;
 let RowComponent: any;
+let TableMod: any;
 let PrivateChannelSortStore: any;
 
 const safe = <T,>(fn: () => T): T | undefined => {
@@ -61,6 +63,30 @@ function filterList<T>(list: T): T {
 
 const isDm = (channel: any) => channel && (channel.type === 1 || channel.type === 3);
 
+const h = React.createElement;
+
+/** Builds a row that looks like Discord's own (card + icon), falling back to a plain row. */
+function makeRow(key: string, label: string, iconNames: string[], onPress: () => void) {
+    const iconId = iconNames.map(n => safe(() => getAssetIDByName(n))).find(Boolean);
+
+    if (TableMod?.TableRow) {
+        const Icon = TableMod.TableRowIcon ?? TableMod.TableRow.Icon;
+        const row = h(TableMod.TableRow, {
+            key,
+            label,
+            onPress,
+            icon: iconId && Icon ? h(Icon, { source: iconId }) : undefined,
+        });
+        return TableMod.TableRowGroup
+            ? h(TableMod.TableRowGroup, { key: `${key}-group`, hasIcons: !!iconId }, row)
+            : row;
+    }
+
+    return h(RowComponent, { key, label, onPress, icon: iconId });
+}
+
+const eyeIcons = ["ic_visibility", "ic_visibility_24px", "ic_eye", "ic_show_password"];
+
 /** Finds the array of rows/buttons inside a rendered action sheet and inserts our row. */
 function injectRow(res: any, row: any): boolean {
     const list = findInReactTree(
@@ -105,6 +131,7 @@ export const onLoad = () => {
 
 const load = () => {
     LazyActionSheet = safe(() => findByProps("openLazy", "hideActionSheet"));
+    TableMod = safe(() => findByProps("TableRow", "TableRowGroup"));
     RowComponent =
         safe(() => findByProps("ActionSheetRow")?.ActionSheetRow) ??
         safe(() => findByName("ActionSheetRow", false)) ??
@@ -113,7 +140,7 @@ const load = () => {
 
     if (!LazyActionSheet) {
         showToast("HideMessages: action sheet module not found");
-    } else if (!RowComponent) {
+    } else if (!TableMod?.TableRow && !RowComponent) {
         showToast("HideMessages: row component not found");
     } else {
         unpatches.push(
@@ -128,13 +155,14 @@ const load = () => {
                     patchSheet(
                         component,
                         () =>
-                            React.createElement(RowComponent, {
-                                key: "vc-hide-message",
-                                label: "Hide",
-                                onPress: () => {
+                            makeRow("vc-hide-message", "Hide", eyeIcons, () => {
+                                try {
                                     hideMessage(message.id, message.channel_id);
-                                    LazyActionSheet.hideActionSheet();
-                                },
+                                    showToast("Message hidden");
+                                } catch (e: any) {
+                                    showToast(`Hide failed: ${e?.message ?? e}`);
+                                }
+                                safe(() => LazyActionSheet.hideActionSheet());
                             }),
                         "Hide"
                     );
@@ -148,14 +176,15 @@ const load = () => {
                     patchSheet(
                         component,
                         () =>
-                            React.createElement(RowComponent, {
-                                key: "vc-hide-dm",
-                                label: hiddenDmIds.has(dmChannel.id) ? "Unhide DM" : "Hide DM",
-                                onPress: () => {
+                            makeRow(
+                                "vc-hide-dm",
+                                hiddenDmIds.has(dmChannel.id) ? "Unhide DM" : "Hide DM",
+                                eyeIcons,
+                                () => {
                                     toggleDm(dmChannel.id);
-                                    LazyActionSheet.hideActionSheet();
-                                },
-                            }),
+                                    safe(() => LazyActionSheet.hideActionSheet());
+                                }
+                            ),
                         "Hide DM"
                     );
                 }
