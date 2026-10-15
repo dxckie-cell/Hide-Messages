@@ -1,6 +1,6 @@
 import { registerCommand } from "@vendetta/commands";
 import { findByName, findByProps, findByStoreName } from "@vendetta/metro";
-import { FluxDispatcher, React } from "@vendetta/metro/common";
+import { FluxDispatcher, React, ReactNative } from "@vendetta/metro/common";
 import { after, before } from "@vendetta/patcher";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import { showToast } from "@vendetta/ui/toasts";
@@ -31,6 +31,8 @@ let ChannelStoreRef: any;
 let patchedGetters: string[] = [];
 
 function refreshDmList(channelId?: string) {
+    // Re-render every wrapped list right away (this is what actually removes the row)
+    for (const f of [...listListeners]) safe(f);
     const emit = () => {
         for (const store of [PrivateChannelSortStore, ChannelStoreRef]) {
             safe(() => store?.emitChange?.(null));
@@ -110,7 +112,7 @@ function toggleDm(channelId: string) {
     refreshDmList(channelId);
 }
 
-const idOf = (c: any): string | undefined => (typeof c === "string" ? c : c?.id ?? c?.channelId);
+const idOf = (c: any): string | undefined => (typeof c === "string" ? c : c?.id ?? c?.channelId ?? c?.channel?.id);
 
 // Filtered results are cached per original result so the same object comes back while nothing
 // changed (components that compare results by reference would otherwise re-render forever).
@@ -188,6 +190,79 @@ function filterList<T>(list: T, where = "?"): T {
         );
     }
     return value;
+}
+
+
+// ---- List wrapping -------------------------------------------------------------------------
+// The DM list's data doesn't come from the store getters we can reach, so instead we wrap the
+// list component (FlashList / FlatList) that shows DMs. The wrapper filters hidden channels out
+// of `data` and re-renders itself the moment a DM is hidden/unhidden.
+const listListeners = new Set<() => void>();
+const wrappedLists = new WeakMap<object, any>();
+
+const looksLikeDmList = (data: any) => {
+    if (!Array.isArray(data) || !data.length) return false;
+    const cs = ChannelStoreRef;
+    if (!cs?.getChannel) return false;
+    for (let i = 0; i < data.length && i < 30; i++) {
+        const id = idOf(data[i]);
+        if (typeof id === "string" && /^\d{15,}$/.test(id)) {
+            const ch = safe(() => cs.getChannel(id));
+            if (ch && (ch.type === 1 || ch.type === 3)) return true;
+        }
+    }
+    return false;
+};
+
+function wrapList(Orig: any) {
+    let W = wrappedLists.get(Orig);
+    if (W) return W;
+    W = React.forwardRef((props: any, ref: any) => {
+        const [, force] = React.useReducer((x: number) => x + 1, 0);
+        React.useEffect(() => {
+            listListeners.add(force as any);
+            return () => {
+                listListeners.delete(force as any);
+            };
+        }, []);
+        const data = Array.isArray(props.data) ? filterList(props.data, "List") : props.data;
+        return React.createElement(Orig, { ...props, data, ref });
+    });
+    W.displayName = `HideMessages(${Orig.displayName ?? Orig.name ?? "List"})`;
+    wrappedLists.set(Orig, W);
+    return W;
+}
+
+function installListWrap(): string[] {
+    const types = new Set<any>();
+    safe(() => findByProps("FlashList")?.FlashList) && types.add(findByProps("FlashList").FlashList);
+    safe(() => ReactNative?.FlatList) && types.add(ReactNative.FlatList);
+    safe(() => findByProps("MasonryFlashList")?.FlashList) &&
+        types.add(findByProps("MasonryFlashList").FlashList);
+    const wrappers = new Set<any>();
+    const hook = (args: any[]) => {
+        const T = args[0];
+        if (T && types.has(T) && looksLikeDmList(args[1]?.data)) args[0] = wrapList(T);
+        return args;
+    };
+    const names: string[] = [];
+    const ce = safe(() => before("createElement", React, hook));
+    if (ce) {
+        unpatches.push(ce);
+        names.push("createElement");
+    }
+    const rt = safe(() => findByProps("jsx", "jsxs"));
+    for (const n of ["jsx", "jsxs", "jsxDEV"]) {
+        if (rt && typeof rt[n] === "function") {
+            const u = safe(() => before(n, rt, hook));
+            if (u) {
+                unpatches.push(u);
+                names.push(n);
+            }
+        }
+    }
+    void wrappers;
+    return names.concat([...types].map(t => String(t?.displayName ?? t?.name ?? "list")));
 }
 
 const versionCopies = new WeakMap<object, { bump: number; base: any; copy: any[] }>();
@@ -518,7 +593,7 @@ const load = () => {
             );
         }
     }
-    patchedGetters = patched;
+    patchedGetters = patched.concat(safe(() => installListWrap()) ?? ["list-wrap-failed"]);
 
     // Slash commands (fallback that doesn't depend on Discord's sheet internals)
     const base = { applicationId: "-1", inputType: 1, type: 1, options: [] as any[] };
