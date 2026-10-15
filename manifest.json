@@ -1,0 +1,9 @@
+{
+    "name": "HideMessages",
+    "description": "Temporarily hide messages and DMs until you restart.",
+    "authors": [{ "name": "yash (ported)" }],
+    "main": "src/index.ts",
+    "vendetta": {
+        "icon": "ic_visibility"
+    }
+}
