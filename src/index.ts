@@ -46,8 +46,9 @@ function refreshDmList(channelId?: string) {
         emit();
     };
     poke();
-    // Once more after the action sheet has closed
-    setTimeout(poke, 250);
+    // The list can be slow to pick the change up (especially while the action sheet is closing),
+    // so keep nudging it for a few seconds.
+    for (const delay of [150, 500, 1200, 2500]) setTimeout(poke, delay);
 }
 
 /** Removes a message from the local client only. Returns false if it's still in the store afterwards. */
