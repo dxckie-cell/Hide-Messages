@@ -67,14 +67,22 @@ const typeName = (c: any) => String(c?.type?.name ?? c?.type?.displayName ?? "")
 const isRowish = (c: any) =>
     !!c?.props && (typeof c.props.label === "string" || /Group|Row|Section/.test(typeName(c)));
 
+/** True if a row/group actually has something inside (an empty group still takes up space). */
+const hasContent = (c: any) => {
+    const kids = c?.props?.children;
+    if (kids === undefined) return typeof c?.props?.label === "string";
+    return [kids].flat(Infinity).some((k: any) => k !== null && k !== undefined && k !== false && k !== "");
+};
+
 /** Inserts our row after the last real row/group of the sheet (before any trailing spacer). */
 function injectRow(res: any, row: any): boolean {
     const list = findInReactTree(res, (x: any) => Array.isArray(x) && x.length > 0 && x.some(isRowish));
     if (!list) return false;
     let at = -1;
     list.forEach((c: any, i: number) => {
-        if (isRowish(c)) at = i;
+        if (isRowish(c) && hasContent(c)) at = i;
     });
+    if (at === -1) list.forEach((c: any, i: number) => (isRowish(c) ? (at = i) : 0));
     list.splice(at + 1, 0, row);
     return true;
 }

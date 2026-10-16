@@ -3,7 +3,7 @@
     "description": "Temporarily hide messages until you restart.",
     "authors": [
         {
-            "name": "yash (ported)"
+            "name": "dxckie cell"
         }
     ],
     "main": "src/index.ts",
