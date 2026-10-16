@@ -30,7 +30,7 @@ const unpatches: (() => void)[] = [];
 let ChannelStoreRef: any;
 let patchedGetters: string[] = [];
 let listHooks: string[] = [];
-const BUILD = "b7";
+const BUILD = "b8";
 
 function refreshDmList(channelId?: string) {
     // Re-render every wrapped list right away (this is what actually removes the row)
@@ -287,6 +287,13 @@ function installListWrap(): string[] {
                 );
             }
         }
+        if (T && !bypassWrap && (typeof T === "function" || typeof T === "object")) {
+            const nm = String(T.displayName ?? T.name ?? T.type?.name ?? "");
+            if (nm === "FastestList" && Array.isArray(args[1]?.sections) && args[1]?.renderItem) {
+                args[0] = wrapFastest(T);
+                return args;
+            }
+        }
         if (T && types.has(T) && looksLikeDmList(args[1]?.data)) args[0] = wrapList(T);
         return args;
     };
@@ -308,6 +315,72 @@ function installListWrap(): string[] {
     }
     void wrappers;
     return names.concat([...types].map(t => String(t?.displayName ?? t?.name ?? "list")));
+}
+
+
+// ---- FastestList (Discord's own DM list) ------------------------------------------------------
+// It takes `sections` (row counts) and render callbacks that take (section, row). We hide a DM by
+// dropping its row from the counts and remapping the (section, row) the callbacks receive.
+let bypassWrap = false;
+const fastestWrappers = new WeakMap<object, any>();
+const ROW_FN = /^(render|get)\w*(Item|Row)/i;
+
+function wrapFastest(Orig: any) {
+    let W = fastestWrappers.get(Orig);
+    if (W) return W;
+    W = React.forwardRef((props: any, ref: any) => {
+        const [, force] = React.useReducer((x: number) => x + 1, 0);
+        React.useEffect(() => {
+            listListeners.add(force as any);
+            return () => {
+                listListeners.delete(force as any);
+            };
+        }, []);
+
+        let next = props;
+        const hide = (id: any) => typeof id === "string" && hiddenDmIds.has(id) && !showHiddenDms;
+        if (hiddenDmIds.size && !showHiddenDms && Array.isArray(props.sections) && typeof props.renderItem === "function") {
+            const maps: (number[] | null)[] = [];
+            let changed = false;
+            const sections = props.sections.map((count: number, si: number) => {
+                if (typeof count !== "number" || count <= 0) {
+                    maps.push(null);
+                    return count;
+                }
+                const first: any = safe(() => props.renderItem(si, 0));
+                if (!first?.props || first.props.channelId === undefined) {
+                    maps.push(null);
+                    return count;
+                }
+                const keep: number[] = [];
+                for (let r = 0; r < count; r++) {
+                    const el: any = r === 0 ? first : safe(() => props.renderItem(si, r));
+                    if (!hide(el?.props?.channelId)) keep.push(r);
+                }
+                if (keep.length !== count) changed = true;
+                maps.push(keep);
+                return keep.length;
+            });
+            if (changed) {
+                next = { ...props, sections };
+                for (const k of Object.keys(props)) {
+                    const fn = props[k];
+                    if (typeof fn !== "function" || !(ROW_FN.test(k) || k === "keyExtractor")) continue;
+                    next[k] = (si: number, r: number, ...rest: any[]) =>
+                        fn(si, maps[si] ? maps[si]![r] ?? r : r, ...rest);
+                }
+            }
+        }
+        bypassWrap = true;
+        try {
+            return React.createElement(Orig, { ...next, ref });
+        } finally {
+            bypassWrap = false;
+        }
+    });
+    W.displayName = "HideMessages(FastestList)";
+    fastestWrappers.set(Orig, W);
+    return W;
 }
 
 const versionCopies = new WeakMap<object, { bump: number; base: any; copy: any[] }>();
