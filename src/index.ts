@@ -30,7 +30,7 @@ const unpatches: (() => void)[] = [];
 let ChannelStoreRef: any;
 let patchedGetters: string[] = [];
 let listHooks: string[] = [];
-const BUILD = "b6";
+const BUILD = "b7";
 
 function refreshDmList(channelId?: string) {
     // Re-render every wrapped list right away (this is what actually removes the row)
@@ -249,11 +249,27 @@ function installListWrap(): string[] {
             const pr = args[1];
             const d = pr?.data ?? pr?.sections;
             const rawName = String(T.displayName ?? T.name ?? T.type?.name ?? T.render?.name ?? "?");
-            if (/Fastest|Recycler|Sectioned/i.test(rawName) && pr && !/Command/i.test(rawName)) {
+            if (/Fast|Recycler|Sectioned/i.test(rawName) && pr && !/Command/i.test(rawName)) {
+                const keys = Object.keys(pr);
                 listSeen.set(
                     `P:${rawName}`,
-                    `${rawName} sections=[${Array.isArray(pr.sections) ? pr.sections.join(",") : typeof pr.sections}] props{${Object.keys(pr).slice(0, 16).join("|")}}`
+                    `${rawName} sections=[${Array.isArray(pr.sections) ? pr.sections.slice(0, 8).join(",") : typeof pr.sections}] props{${keys.slice(0, 18).join("|")}}`
                 );
+                const out: string[] = [];
+                for (const k of keys) {
+                    if (typeof pr[k] !== "function" || !/render|row|item|header|section/i.test(k) || /Footer/i.test(k)) continue;
+                    for (const [a, b] of [[0, 0], [1, 0], [0, 1]]) {
+                        const r = safe(() => pr[k](a, b));
+                        if (r && typeof r === "object") {
+                            const rp = r.props ?? {};
+                            const nm = String(r.type?.displayName ?? r.type?.name ?? r.type?.type?.name ?? "?");
+                            const idv = rp.channelId ?? rp.channel?.id ?? rp.id ?? rp.item?.id ?? rp.item;
+                            out.push(`${k}(${a},${b})=${nm}{${Object.keys(rp).slice(0, 8).join("|")}} id=${typeof idv === "object" ? "obj" : String(idv).slice(0, 18)}`);
+                            break;
+                        }
+                    }
+                }
+                if (out.length) listSeen.set(`R:${rawName}`, `${rawName} ${out.join(" ; ")}`);
             }
             const isCmd = (o: any) => !!(o?.execute || o?.data?.[0]?.execute || o?.applicationId);
             if (Array.isArray(d) && d.length > 1 && !isCmd(d[0]) && !/Command/i.test(rawName)) {
