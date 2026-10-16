@@ -30,9 +30,11 @@ const unpatches: (() => void)[] = [];
 let ChannelStoreRef: any;
 let patchedGetters: string[] = [];
 let listHooks: string[] = [];
-const BUILD = "b8";
+const BUILD = "b9";
 
+let listVersion = 0;
 function refreshDmList(channelId?: string) {
+    listVersion++;
     // Re-render every wrapped list right away (this is what actually removes the row)
     for (const f of [...listListeners]) safe(f);
     const emit = () => {
@@ -373,7 +375,8 @@ function wrapFastest(Orig: any) {
         }
         bypassWrap = true;
         try {
-            return React.createElement(Orig, { ...next, ref });
+            // New key per hide/unhide: remounts the list so recycled rows can't keep showing old DMs
+            return React.createElement(Orig, { ...next, ref, key: `hm-${listVersion}` });
         } finally {
             bypassWrap = false;
         }
